@@ -84,13 +84,17 @@ function fmtTime(iso){const d=new Date(iso);return d.toLocaleTimeString([], {hou
 let myId = localStorage.getItem('g2g:myid');
 if(!myId){ myId='u'+Math.random().toString(36).slice(2,10)+Date.now().toString(36); localStorage.setItem('g2g:myid', myId); }
 
-let room=null, channel=null, messages=[], onlineIds=new Set();
+let room=null, channel=null, messages=[], onlineIds=new Set(), heartbeatTimer=null;
 
-function renderLobby(){
+const MAX_ROOM_SIZE = 5;
+const MIN_ROOM_SIZE = 2;
+
+function renderLobby(errorMsg){
   document.getElementById('app').innerHTML = `
     <h1>👻 ghost2ghost</h1>
-    <div class="sub">Anonymous talk with a bit of spice. Create a room or join one with a code.</div>
+    <div class="sub">Anonymous talk with a bit of spice. Small groups only — ${MIN_ROOM_SIZE} to ${MAX_ROOM_SIZE} people per room.</div>
     <div class="card">
+      ${errorMsg ? `<div class="note" style="color:#ff8a6a;margin-top:0;margin-bottom:10px;">${errorMsg}</div>` : ''}
       <label>Room code</label>
       <input id="codeInput" type="text" placeholder="e.g. echo-4821" autocomplete="off">
       <button class="btn-primary" id="joinBtn">Enter room</button>
@@ -107,6 +111,20 @@ function renderLobby(){
 
 async function enterRoom(code){
   room=code;
+  const {error: joinErr} = await sb.from('room_members').insert({room, user_id: myId});
+  if(joinErr){
+    if(joinErr.message && joinErr.message.includes('room_full')){
+      renderLobby(`That room already has 5 people — try another code.`);
+    } else {
+      renderLobby(`Could not join that room. Try again.`);
+    }
+    room=null;
+    return;
+  }
+  heartbeatTimer = setInterval(()=>{
+    sb.from('room_members').update({last_seen: new Date().toISOString()}).eq('room', room).eq('user_id', myId).then(()=>{});
+  }, 30000);
+
   renderRoom();
   const [chatRes, spicyRes] = await Promise.all([
     sb.from('chat_messages').select('*').eq('room', room).order('created_at', {ascending:true}).limit(200),
@@ -135,6 +153,8 @@ async function enterRoom(code){
 
 function leaveRoom(){
   if(channel){ sb.removeChannel(channel); channel=null; }
+  if(heartbeatTimer){ clearInterval(heartbeatTimer); heartbeatTimer=null; }
+  if(room){ sb.from('room_members').delete().eq('room', room).eq('user_id', myId).then(()=>{}); }
   room=null; messages=[]; onlineIds=new Set();
   renderLobby();
 }
